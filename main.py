@@ -241,13 +241,22 @@ def physics_check(fuel_err, speed_err):
 # ==================================================
 
 def simulate_sensor():
+    # Slowly drifting baseline
+    simulate_sensor.fuel_base = getattr(simulate_sensor, "fuel_base", random.uniform(4, 6))
+    simulate_sensor.speed_base = getattr(simulate_sensor, "speed_base", random.uniform(2, 4))
 
-    fuel = random.uniform(3, 9)
-    speed = random.uniform(1, 5)
+    simulate_sensor.fuel_base += random.uniform(-0.3, 0.3)
+    simulate_sensor.speed_base += random.uniform(-0.2, 0.2)
 
-    fault = random.choice([0, 0, 0, 10, 20])
+    # Rare but strong fault
+    fault = 0
+    if random.random() < 0.1:   # 10% chance
+        fault = random.uniform(5, 20)
 
-    return fuel + fault, speed + fault * 0.6
+    fuel = simulate_sensor.fuel_base + fault
+    speed = simulate_sensor.speed_base + fault * 0.6
+
+    return fuel, speed
 
 
 # ==================================================
@@ -633,8 +642,7 @@ def main():
             # ================= LSTM =================
 
             lstm_status = "OFF"
-            risk_prob = 0.0
-
+            risk_prob = risk_prob * 0.95
 
             lstm_buffer.append([
                 fuel_err,
