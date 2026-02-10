@@ -3,6 +3,7 @@ import os
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
 import time
 import random
+import threading
 import csv
 import numpy as np
 import pandas as pd
@@ -486,12 +487,6 @@ def choose_action(state):
 # ==================================================
 # ================= LIVE DATA LOGGER =================
 
-import json
-import os
-import time
-import numpy as np
-
-
 def safe_float(x):
     if isinstance(x, (np.float32, np.float64)):
         return float(x)
@@ -509,11 +504,11 @@ def save_live_data(
     live_data = {
         "timestamp": time.time(),
 
-        "fuel_err": safe_float(round(fuel_err, 2)),
-        "speed_err": safe_float(round(speed_err, 2)),
+        "fuel_err": round(float(fuel_err), 2),
+        "speed_err": round(float(speed_err), 2),
 
-        "risk": safe_float(round(risk_prob, 2)),
-        "anomaly": safe_float(round(anomaly_score, 4)),
+        "risk": round(float(risk_prob), 2),
+        "anomaly": round(float(anomaly_score), 4),
 
         "status": str(final),
         "ai_state": str(ai_status)
@@ -543,23 +538,46 @@ def main():
     t = 0
     max_alerts = 30
 
-    while alert_count < max_alerts:
+    # ---------- INIT LIVE VALUES ----------
+    fuel_err = 0.0
+    speed_err = 0.0
+    risk_prob = 0.0
+    anomaly_score = 0.0
+    final = "NORMAL"
+    ai_status = "BOOTING"
 
-        # Save live data every cycle
-        save_live_data(
-            fuel_err,
-            speed_err,
-            risk_prob,
-            anomaly_score,
-            final,
-            ai_status
-        )
+
+    while alert_count < max_alerts:
 
         time.sleep(0.2)
         t += 1
 
         fuel, speed = simulate_sensor()
         buffer.append((fuel, speed))
+
+        # ===== CONTINUOUS FEATURE UPDATE =====
+        fuels = np.nan_to_num([b[0] for b in buffer])
+        speeds = np.nan_to_num([b[1] for b in buffer])
+
+        fuel_err = abs(fuels[-1] - np.mean(fuels))
+        speed_err = abs(speeds[-1] - np.mean(speeds))
+
+        fuel_trend = safe_trend(fuels)
+        speed_var = np.var(speeds)
+
+        drift_rate = abs(fuels[-1] - fuels[0]) / max(1, len(fuels))
+
+        alert_rate = alert_count / max(1, t)
+
+        # ---- LIVE TERMINAL STATUS ----
+        print(
+            f"[LIVE] FuelErr={fuel_err:.2f} | "
+            f"SpeedErr={speed_err:.2f} | "
+            f"Risk={risk_prob:.2f}% | "
+            f"Anomaly={anomaly_score:.4f} | "
+            f"Final={final} | "
+            f"AI={ai_status}"
+        )
 
         if random.random() < 0.3:
 
@@ -707,9 +725,12 @@ def main():
             main_cause = max(causes, key=causes.get)
             main_prob = causes[main_cause] * 100
 
+
             # ================= WHAT-IF SIMULATION =================
 
-            sim_continue = simulate_future(
+            sim_results = {}
+
+            sim_results["continue"] = simulate_future(
                 fuel_err,
                 speed_err,
                 drift_rate,
@@ -717,7 +738,7 @@ def main():
                 action="CONTINUE"
             )
 
-            sim_descend = simulate_future(
+            sim_results["descend"] = simulate_future(
                 fuel_err,
                 speed_err,
                 drift_rate,
@@ -725,14 +746,13 @@ def main():
                 action="DESCEND"
             )
 
-            sim_divert = simulate_future(
+            sim_results["divert"] = simulate_future(
                 fuel_err,
                 speed_err,
                 drift_rate,
                 risk_prob,
                 action="DIVERT"
             )
-
             # ================= LEARNING STATE =================
 
             state = get_state(
@@ -759,16 +779,15 @@ def main():
 
             # Use simulation outcome
             best_safe = max(
-                sim_continue["safe_prob"],
-                sim_descend["safe_prob"],
-                sim_divert["safe_prob"]
+                sim_results.get("continue", {"safe_prob": 50})["safe_prob"],
+                sim_results.get("descend", {"safe_prob": 50})["safe_prob"],
+                sim_results.get("divert", {"safe_prob": 50})["safe_prob"]
             )
 
-            chosen_sim = {
-                "CONTINUE": sim_continue,
-                "DESCEND": sim_descend,
-                "DIVERT": sim_divert
-            }[chosen_action]
+            chosen_sim = sim_results.get(
+                chosen_action.lower(),
+                {"fail_prob": 50, "safe_prob": 50, "avg_time": 60}
+            )
 
             reward = 0
 
@@ -850,51 +869,17 @@ def main():
             print(f"Risk Prob   : {risk_prob:.2f}%")
             print(f"Confidence  : {confidence:.2f}%")
 
-            # ================= SAVE LIVE DATA =================
+            # ---------- SAVE LIVE DATA ----------
+            ##save_live_data(
+               # fuel_err,
+               # speed_err,
+              #  risk_prob,
+              #  anomaly_score,
+              #  final,
+              #  ai_status
+            #)
 
-            # ================= SAVE LIVE DATA =================
 
-            import json
-            import os
-            import time
-            import numpy as np
-
-            def safe_float(x):
-                if isinstance(x, (np.float32, np.float64)):
-                    return float(x)
-                return float(x)
-
-            def save_live_data(
-                    fuel_err,
-                    speed_err,
-                    risk_prob,
-                    anomaly_score,
-                    final,
-                    ai_status
-            ):
-                live_data = {
-                    "timestamp": time.time(),
-
-                    "fuel_err": safe_float(round(fuel_err, 2)),
-                    "speed_err": safe_float(round(speed_err, 2)),
-
-                    "risk": safe_float(round(risk_prob, 2)),
-                    "anomaly": safe_float(round(anomaly_score, 4)),
-
-                    "status": str(final),
-                    "ai_state": str(ai_status)
-                }
-
-                try:
-                    # Write temp file first (atomic write)
-                    with open("live_data.json.tmp", "w") as f:
-                        json.dump(live_data, f, indent=2)
-
-                    # Replace old file safely
-                    os.replace("live_data.json.tmp", "live_data.json")
-
-                except Exception as e:
-                    print("❌ Live data save failed:", e)
             # ---------- ROOT CAUSE REPORT ----------
 
             print("\nRoot Cause Analysis:")
@@ -908,22 +893,37 @@ def main():
 
             print("\nWhat-If Simulation:")
 
-            print(
-                f"  Continue → Fail {sim_continue['fail_prob']:.1f}% | "
-                f"Safe {sim_continue['safe_prob']:.1f}% | "
-                f"Time {sim_continue['avg_time']:.1f} min"
+            sim_c = sim_results.get(
+                "continue",
+                {"fail_prob": 50, "safe_prob": 50, "avg_time": 60}
             )
 
             print(
-                f"  Descend  → Fail {sim_descend['fail_prob']:.1f}% | "
-                f"Safe {sim_descend['safe_prob']:.1f}% | "
-                f"Time {sim_descend['avg_time']:.1f} min"
+                f"  Continue → Fail {sim_c['fail_prob']:.1f}% | "
+                f"Safe {sim_c['safe_prob']:.1f}% | "
+                f"Time {sim_c['avg_time']:.1f} min"
+            )
+
+            sim_d = sim_results.get(
+                "descend",
+                {"fail_prob": 50, "safe_prob": 50, "avg_time": 60}
             )
 
             print(
-                f"  Divert   → Fail {sim_divert['fail_prob']:.1f}% | "
-                f"Safe {sim_divert['safe_prob']:.1f}% | "
-                f"Time {sim_divert['avg_time']:.1f} min"
+                f"  Descend  → Fail {sim_d['fail_prob']:.1f}% | "
+                f"Safe {sim_d['safe_prob']:.1f}% | "
+                f"Time {sim_d['avg_time']:.1f} min"
+            )
+
+            sim_v = sim_results.get(
+                "divert",
+                {"fail_prob": 50, "safe_prob": 50, "avg_time": 60}
+            )
+
+            print(
+                f"  Divert   → Fail {sim_v['fail_prob']:.1f}% | "
+                f"Safe {sim_v['safe_prob']:.1f}% | "
+                f"Time {sim_v['avg_time']:.1f} min"
             )
 
             # ---------- FINAL STATUS ----------
@@ -939,6 +939,9 @@ def main():
                     print(f"    {a:8s} → {v:.2f}")
 
             print(f"\nFinal       : {final}")
+
+
+
 
             print("-" * 45)
             # ================= SAVE LEARNING BRAIN =================
