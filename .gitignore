@@ -1,0 +1,20 @@
+# Virtual env
+venv/
+venv_lstm/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Models
+*.h5
+*.pkl
+*.save
+
+# Data
+training_data.csv
+live_data.json
+live_data.tmp.json
+
+# OS
+.DS_Store
